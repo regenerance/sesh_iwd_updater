@@ -1,0 +1,180 @@
+import os
+import sys
+import requests
+import subprocess
+import time
+import threading
+import tkinter as tk
+from tkinter import ttk, messagebox
+
+UPDATE_SERVERS = {
+    "US": "sesh_beta00.iwd",
+    "EU": "sesh_beta00.iwd"
+}
+MODS_FOLDER = os.path.join(os.getcwd(), "mods", "sesh_server_v2")
+MOD_FILE = os.path.join(MODS_FOLDER, "sesh_beta00.iwd")
+OLD_MOD_FILE = os.path.join(MODS_FOLDER, "sesh_server_v2.iwd")
+LAUNCHER = os.path.join(os.getcwd(), "iw4x-launcher.exe")
+
+class SeshUpdaterGUI:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Sesh Mod/IWD Updater")
+        self.root.resizable(False, False)
+        self.center_window()
+        self.root.attributes("-alpha", 0.0)
+        self.fade_in()
+        self.bg_color = "#1e1e1e"
+        self.fg_color = "#ffffff"
+        self.progress_color = "#ff0000"
+        self.root.configure(bg=self.bg_color)
+        self.label = tk.Label(root, text="Checking for updates...", font=("Arial", 12),
+                              bg=self.bg_color, fg=self.fg_color)
+        self.label.pack(pady=(20, 10))
+        style = ttk.Style(root)
+        style.theme_use('default')
+        style.configure("red.Horizontal.TProgressbar",
+                        troughcolor="#2e2e2e",
+                        background=self.progress_color,
+                        thickness=25)
+        style.layout("red.Horizontal.TProgressbar",
+                     [('Horizontal.Progressbar.trough',
+                       {'children': [('Horizontal.Progressbar.pbar', {'side': 'left', 'sticky': 'ns'})],
+                        'sticky': 'nswe'})])
+        self.progress = ttk.Progressbar(root, style="red.Horizontal.TProgressbar",
+                                        orient="horizontal", length=400, mode="determinate")
+        self.progress.pack(pady=(0, 10))
+        self.status = tk.Label(root, text="", font=("Arial", 10),
+                               bg=self.bg_color, fg=self.fg_color)
+        self.status.pack(pady=(0, 10))
+        threading.Thread(target=self.run_update, daemon=True).start()
+
+    def center_window(self):
+        self.root.update_idletasks()
+        width = 450
+        height = 150
+        x = (self.root.winfo_screenwidth() // 2) - (width // 2)
+        y = (self.root.winfo_screenheight() // 2) - (height // 2)
+        self.root.geometry(f"{width}x{height}+{x}+{y}")
+
+    def fade_in(self):
+        alpha = self.root.attributes("-alpha")
+        alpha += 0.05
+        if alpha >= 1.0:
+            self.root.attributes("-alpha", 1.0)
+        else:
+            self.root.attributes("-alpha", alpha)
+            self.root.after(30, self.fade_in)
+
+    def ping_server(self, url):
+        try:
+            start = time.time()
+            response = requests.head(url, timeout=3)
+            response.raise_for_status()
+            return (time.time() - start) * 1000
+        except:
+            return float('inf')
+
+    def choose_fastest_server(self):
+        self.label.config(text="Checking server ping...")
+        self.root.update()
+        pings = {}
+        for name, url in UPDATE_SERVERS.items():
+            self.label.config(text=f"Pinging {name} server...")
+            self.root.update()
+            pings[name] = self.ping_server(url)
+        best = min(pings, key=pings.get)
+        self.label.config(text=f"Selected {best} server for download")
+        self.root.update()
+        return UPDATE_SERVERS[best]
+
+    def get_remote_filesize(self, url):
+        try:
+            response = requests.head(url, timeout=5)
+            response.raise_for_status()
+            return int(response.headers.get("Content-Length", 0))
+        except:
+            return None
+
+    def get_local_filesize(self):
+        if os.path.exists(MOD_FILE):
+            return os.path.getsize(MOD_FILE)
+        return None
+
+    def download_file(self, url):
+        try:
+            response = requests.get(url, stream=True)
+            response.raise_for_status()
+            total = int(response.headers.get("Content-Length", 0))
+            os.makedirs(os.path.dirname(MOD_FILE), exist_ok=True)
+            self.progress["maximum"] = total
+            downloaded = 0
+            start_time = time.time()
+            with open(MOD_FILE, "wb") as f:
+                for chunk in response.iter_content(chunk_size=1024):
+                    if chunk:
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        self.progress["value"] = downloaded
+                        elapsed = time.time() - start_time
+                        speed = downloaded / 1024 / elapsed if elapsed > 0 else 0
+                        eta = (total - downloaded) / 1024 / speed if speed > 0 else 0
+                        self.status.config(text=f"{downloaded/1024/1024:.2f}MB / {total/1024/1024:.2f}MB | "
+                                                f"{speed:.2f} KB/s | ETA: {eta:.1f}s")
+                        self.root.update_idletasks()
+                        time.sleep(0.001)
+            self.progress["value"] = total
+            self.show_complete_animation()
+            return True
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to download file: {e}")
+            return False
+
+    def show_complete_animation(self):
+        for _ in range(3):
+            self.label.config(text="Update Complete!")
+            self.root.update()
+            time.sleep(0.3)
+            self.label.config(text="")
+            self.root.update()
+            time.sleep(0.3)
+        self.label.config(text="Launching IW4x...")
+        self.root.update()
+
+    def launch_iw4x(self):
+        if not os.path.exists(LAUNCHER):
+            messagebox.showerror("Error", f"Launcher not found: {LAUNCHER}")
+            self.root.destroy()
+            return
+        try:
+            subprocess.Popen([LAUNCHER], close_fds=True)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to launch IW4x: {e}")
+        self.root.destroy()
+
+    def run_update(self):
+        try:
+            download_url = self.choose_fastest_server()
+            remote_size = self.get_remote_filesize(download_url)
+            local_size = self.get_local_filesize()
+            update_needed = remote_size is not None and remote_size != local_size
+            if update_needed:
+                self.label.config(text="New version detected. Downloading update...")
+                self.root.update()
+                if os.path.exists(OLD_MOD_FILE):
+                    os.remove(OLD_MOD_FILE)
+                if os.path.exists(MOD_FILE):
+                    os.remove(MOD_FILE)
+                success = self.download_file(download_url)
+                if not success:
+                    self.label.config(text="Download failed, launching IW4x...")
+            else:
+                self.label.config(text="No update needed.")
+        except Exception as e:
+            messagebox.showwarning("Warning", f"Error checking updates: {e}")
+        self.launch_iw4x()
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = SeshUpdaterGUI(root)
+    root.mainloop()
